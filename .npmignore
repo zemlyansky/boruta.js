@@ -1,0 +1,6 @@
+dist/
+example/
+node_modules/
+native/
+*.swp
+npm-debug.log
