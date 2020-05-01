@@ -4,12 +4,13 @@ const pbinom = require('binomial-cdf')
 
 function getImportanceRFwasm (X, y, opts) {
   const rf = new RandomForest({
-    maxDepth: 10,
-    nEstimators: 50,
+    maxDepth: opts.maxDepth || 10,
+    nEstimators: opts.nEstimators || 50,
     type: opts.type || 'auto'
   })
   rf.train(X, y)
-  return rf.getFeatureImportances(X, y, { n: 5, means: true })
+  const imp = rf.getFeatureImportances(X, y, { n: opts.nRepeats, means: true, verbose: false })
+  return imp
 }
 
 const defaults = {
@@ -23,6 +24,7 @@ const defaults = {
 module.exports = function boruta (X, y, opts = {}) {
   const options = Object.assign({}, defaults, opts)
   const log = options.verbose ? console.log : () => {}
+  log('Starting Boruta (p: %.2f, n: %d, maxRuns: %d)...', options.pValue, options.nRepeats, options.maxRuns)
 
   if ((typeof X === 'object') && (!Array.isArray(X)) && (typeof y === 'string')) {
     // Assume dataframe (object) here and convert to 2D array
@@ -41,14 +43,15 @@ module.exports = function boruta (X, y, opts = {}) {
 
   if (!Array.isArray(X) || !Array.isArray(y)) {
     throw new Error('Inputs are not arrays')
-  } else if (X.flat().some(v => isNaN(v)) || y.some(v => isNaN(v))) {
-    throw new Error('NaNs in the data')
+  // We probably don't need to check NaN here because different models can deal with them in their own ways
+  // } else if (X.flat().some(v => isNaN(v)) || y.some(v => isNaN(v))) {
+  //  throw new Error('NaNs in the data')
   } else if (options.maxRuns < 11) {
     throw new Error('maxRuns must be greater than 10')
   }
 
   // Useful constants
-  const nAtt = X[0].length 
+  const nAtt = X[0].length
   const nObjects = X.length
   const attNames = options.names || X[0].map((_, i) => i + '')
   const confLevels = {
@@ -67,7 +70,7 @@ module.exports = function boruta (X, y, opts = {}) {
     // xSha is going to be a data frame with shadow attributes; time to init it.
 
     let Xfilt = X.map(x => x.filter((_, i) => decReg[i] !== -1))
-    let namesXfilt = attNames.filter((_, i) => decReg[i] !== -1)
+    // let namesXfilt = attNames.filter((_, i) => decReg[i] !== -1)
     let Xsha = JSON.parse(JSON.stringify(Xfilt))
 
     while (Xsha[0].length < 5) {
@@ -89,7 +92,7 @@ module.exports = function boruta (X, y, opts = {}) {
 
     const namesXsha = Xsha[0].map((_, i) => 'shadow' + i)
 
-    //Notifying user of our progress
+    // Notifying user of the progress
     log(' %s. run of importance source...', runs)
 
     // Calling importance source
@@ -97,14 +100,14 @@ module.exports = function boruta (X, y, opts = {}) {
     const impRaw = options.getImportance(Xbind, y, options)
     // console.log(impRaw)
 
-    if(impRaw.length !== Xfilt[0].length + Xsha[0].length) {
+    if (impRaw.length !== Xfilt[0].length + Xsha[0].length) {
       log('getImp result has a wrong length %d != %d + %d. Please check the given getImportance function', impRaw.length, Xbind[0].length, Xsha[0].length)
-      //throw new Error ('getImp result has a wrong length %d != %d. Please check the given getImportance function', impRaw.length, Xbind[0].length + Xsha[0].length)
+      // throw new Error ('getImp result has a wrong length %d != %d. Please check the given getImportance function', impRaw.length, Xbind[0].length + Xsha[0].length)
     }
 
     // Importance must have Rejected attributes put on place and filled with -Infs
     let imp = new Array(nAtt + nSha).fill(-Infinity)
-    const namesImp = attNames.concat(namesXsha)
+    // const namesImp = attNames.concat(namesXsha)
 
     for (let i = 0, j = 0; i < imp.length - 1; i++) {
       if (typeof decReg[i] === 'undefined' || decReg[i] !== -1) {
@@ -128,7 +131,6 @@ module.exports = function boruta (X, y, opts = {}) {
 
   // Checks whether number of hits is significant
   function doTests (decReg, hitReg, runs) {
-
     // If attribute is significantly more frequent better than shadowMax, its claimed Confirmed
     const toAccept = hitReg.map((hr, i) => {
       return ((1 - pbinom(hr - 1, runs, 0.5)) < options.pValue) && (decReg[i] === 0)
@@ -140,7 +142,7 @@ module.exports = function boruta (X, y, opts = {}) {
     })
 
     for (let i = 0; i < nAtt; i++) {
-      if (toAccept[i]) { 
+      if (toAccept[i]) {
         decReg[i] = 1
       } else if (toReject[i]) {
         decReg[i] = -1
@@ -162,7 +164,7 @@ module.exports = function boruta (X, y, opts = {}) {
       }
       if (nAcc + nRej > 0) {
         if (nLeft > 0) {
-          console.log('  (?) still have %s attribute%s left\n', nLeft, nLeft==1 ? '' : 's')
+          console.log('  (?) still have %s attribute%s left\n', nLeft, nLeft === 1 ? '' : 's')
         } else {
           if (nAcc + nRej > 0) {
             console.log('      no more attributes left\n')
@@ -170,7 +172,7 @@ module.exports = function boruta (X, y, opts = {}) {
         }
       }
     }
-    return(decReg)
+    return decReg
   }
 
   while (decReg.some(v => v === 0) && (runs++ < options.maxRuns)) {
@@ -183,12 +185,12 @@ module.exports = function boruta (X, y, opts = {}) {
         imp: curImp.imp,
         shadowMax: Math.max.apply(null, curImp.shaImp),
         shadowMin: Math.min.apply(null, curImp.shaImp),
-        shadowMean: curImp.shaImp.reduce((a, v) => a + v / curImp.shaImp.length),
+        shadowMean: curImp.shaImp.reduce((a, v) => a + v / curImp.shaImp.length, 0)
       })
     }
   }
 
-  decRegObj = {}
+  const decRegObj = {}
   decReg.forEach((v, i) => {
     decRegObj[attNames[i]] = confLevels[v + '']
   })
