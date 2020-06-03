@@ -1,6 +1,6 @@
 {
   "name": "boruta",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "All relevant feature selection",
   "main": "index.js",
   "scripts": {
